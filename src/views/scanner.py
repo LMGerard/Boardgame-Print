@@ -32,13 +32,25 @@ def render(gm, game_name):
         selected_type_data = type_options[selected_type_name]
         st.info(f"Cible : **{selected_type_data['width_mm']} x {selected_type_data['height_mm']} mm**")
     
-    # 2. Upload
+    # 2. Upload / Camera
     with col_up:
-        uploaded_files = st.file_uploader(
-            "Déposez vos images (Une ou plusieurs)", 
-            type=['png', 'jpg', 'jpeg'], 
-            accept_multiple_files=True
-        )
+        input_method = st.radio("Source", ["📁 Fichier", "📷 Caméra"], horizontal=True, label_visibility="collapsed")
+        
+        uploaded_files = []
+        if input_method == "📁 Fichier":
+            files = st.file_uploader(
+                "Déposez vos images (Une ou plusieurs)", 
+                type=['png', 'jpg', 'jpeg'], 
+                accept_multiple_files=True
+            )
+            if files:
+                uploaded_files = files
+        else:
+            camera_img = st.camera_input("Prendre une photo")
+            if camera_img:
+                # Add a name attribute to mimic UploadedFile behavior if needed, though camera_input returns UploadedFile
+                camera_img.name = "camera_capture.jpg" 
+                uploaded_files = [camera_img]
 
     st.divider()
 
