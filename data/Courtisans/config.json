@@ -1,0 +1,22 @@
+{
+    "card_types": {
+        "Personnages": {
+            "name": "Personnages",
+            "width_mm": 60,
+            "height_mm": 113,
+            "folder": "Personnages"
+        },
+        "Mission": {
+            "name": "Mission",
+            "width_mm": 60,
+            "height_mm": 60,
+            "folder": "Mission"
+        },
+        "Missions": {
+            "name": "Missions",
+            "width_mm": 60,
+            "height_mm": 60,
+            "folder": "Missions"
+        }
+    }
+}
