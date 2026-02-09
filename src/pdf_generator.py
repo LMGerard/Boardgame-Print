@@ -10,6 +10,13 @@ class PDFGenerator(FPDF):
         self.page_w = 210
         self.page_h = 297
 
+    def _validate_image(self, path):
+        if not path:
+            return False
+        if path.startswith('http') or path.startswith('https'):
+            return True
+        return os.path.exists(path)
+
     def add_deck_section(self, cards_data):
         """
         Ajoute une section au PDF pour un groupe de cartes de même dimension.
@@ -50,8 +57,6 @@ class PDFGenerator(FPDF):
             # --- PAGE RECTO (Fronts) ---
             self.add_page()
             
-            # Utiliser la police standard pour debug si besoin, mais ici images pures
-            
             # Placer les cartes
             for idx, card in enumerate(batch):
                 r = (idx // cols) % rows
@@ -61,11 +66,11 @@ class PDFGenerator(FPDF):
                 y = start_y + (r * card_h)
                 
                 # Image Front
-                if os.path.exists(card['front']):
+                if self._validate_image(card['front']):
                     try:
                         self.image(card['front'], x=x, y=y, w=card_w, h=card_h)
-                    except:
-                        pass # Si image invalide
+                    except Exception as e:
+                        print(f"Error adding image {card['front']}: {e}")
                     
                     # Cadre léger de coupe
                     self.set_draw_color(200, 200, 200)
@@ -86,7 +91,7 @@ class PDFGenerator(FPDF):
                 y = start_y + (r * card_h)
                 
                 back_path = card.get('back')
-                if back_path and os.path.exists(back_path):
+                if self._validate_image(back_path):
                     try:
                         self.image(back_path, x=x, y=y, w=card_w, h=card_h)
                     except:

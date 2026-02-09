@@ -1,71 +1,110 @@
 import os
-import cv2
-import shutil
-from pathlib import Path
+import io
 import json
+import boto3
+from botocore.config import Config
+import cv2
+import numpy as np
+from dotenv import load_dotenv
 
-DATA_DIR = Path("data")
+load_dotenv()
 
 class GameManager:
     def __init__(self):
-        # Créer le dossier data s'il n'existe pas
-        if not DATA_DIR.exists():
-            DATA_DIR.mkdir(parents=True)
-            
+        self.bucket = os.getenv("CLOUFLARE_R2_BUCKET_NAME")
+        if not self.bucket:
+             # Fallback ou erreur, mais on suppose .env chargé
+             print("Warning: CLOUFLARE_R2_BUCKET_NAME not found")
+        
+        self.s3 = boto3.client(
+            service_name="s3",
+            endpoint_url=os.getenv("CLOUFLARE_R2_URL"),
+            aws_access_key_id=os.getenv("CLOUFLARE_R2_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("CLOUFLARE_R2_SECRET_ACCESS_KEY"),
+            region_name="auto", # Required for R2
+            config=Config(signature_version='s3v4')
+        )
+        # Prefix racine pour organiser les fichiers
+        self.root_prefix = "games/"
+
+    def _get_game_path(self, game_name):
+        return f"{self.root_prefix}{game_name}/"
+
     def get_games(self):
-        """Retourne la liste des jeux existants (dossiers dans data)"""
-        return [d.name for d in DATA_DIR.iterdir() if d.is_dir()]
+        """Retourne la liste des jeux (dossiers virtuels)"""
+        try:
+            resp = self.s3.list_objects_v2(
+                Bucket=self.bucket, 
+                Prefix=self.root_prefix, 
+                Delimiter='/'
+            )
+            games = []
+            if 'CommonPrefixes' in resp:
+                for p in resp['CommonPrefixes']:
+                    # p['Prefix'] = "games/MyGame/"
+                    name = p['Prefix'].rstrip('/').split('/')[-1]
+                    if name:
+                        games.append(name)
+            return games
+        except Exception as e:
+            print(f"Error get_games: {e}")
+            return []
 
     def create_game(self, game_name):
-        """Crée un nouveau jeu (dossier)"""
         sanitized_name = "".join([c for c in game_name if c.isalnum() or c in (' ', '-', '_')]).strip()
         if not sanitized_name:
-            return False, "Nom de jeu invalide."
+            return False, "Nom invalide."
             
-        game_path = DATA_DIR / sanitized_name
-        if game_path.exists():
-            return False, "Ce jeu existe déjà."
-            
+        key = f"{self._get_game_path(sanitized_name)}config.json"
+        
+        # Check exists (via list ou head)
         try:
-            game_path.mkdir(parents=True)
-            # Initialiser le fichier de config vide
-            self._save_config(sanitized_name, {"card_types": {}})
-            return True, f"Jeu '{sanitized_name}' créé avec succès !"
+            self.s3.head_object(Bucket=self.bucket, Key=key)
+            return False, "Ce jeu existe déjà."
+        except:
+            pass # N'existe pas
+        
+        # Init config
+        initial_config = {"card_types": {}}
+        try:
+            self.s3.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=json.dumps(initial_config, indent=4),
+                ContentType='application/json'
+            )
+            return True, f"Jeu '{sanitized_name}' créé !"
         except Exception as e:
-            return False, f"Erreur lors de la création : {str(e)}"
+            return False, f"Erreur S3: {str(e)}"
 
-    def _get_config_path(self, game_name):
-        return DATA_DIR / game_name / "config.json"
+    def _get_config_key(self, game_name):
+        return f"{self.root_prefix}{game_name}/config.json"
 
     def _load_config(self, game_name):
-        config_path = self._get_config_path(game_name)
-        if not config_path.exists():
+        key = self._get_config_key(game_name)
+        try:
+            resp = self.s3.get_object(Bucket=self.bucket, Key=key)
+            return json.loads(resp['Body'].read().decode('utf-8'))
+        except:
             return {"card_types": {}}
-        with open(config_path, 'r') as f:
-            return json.load(f)
 
     def _save_config(self, game_name, config):
-        with open(self._get_config_path(game_name), 'w') as f:
-            json.dump(config, f, indent=4)
+        key = self._get_config_key(game_name)
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=json.dumps(config, indent=4),
+            ContentType='application/json'
+        )
 
     def add_card_type(self, game_name, type_name, width_mm, height_mm):
-        """Ajoute un nouveau type de carte (ex: 'Personnages', 63x88mm)"""
         config = self._load_config(game_name)
-        
-        # Sanitization du nom du type pour le dossier
         sanitized_type = "".join([c for c in type_name if c.isalnum() or c in (' ', '-', '_')]).strip()
         
         if sanitized_type in config.get("card_types", {}):
-            return False, "Ce type de carte existe déjà."
+            return False, "Ce type existe déjà."
             
-        # Créer le dossier physique
-        type_path = DATA_DIR / game_name / sanitized_type
-        try:
-            type_path.mkdir(exist_ok=True)
-        except Exception as e:
-            return False, f"Erreur création dossier : {str(e)}"
-            
-        # Sauvegarder la config
+        # On ne crée pas de dossier physique en S3, juste la config
         config["card_types"][sanitized_type] = {
             "name": type_name,
             "width_mm": width_mm,
@@ -73,183 +112,210 @@ class GameManager:
             "folder": sanitized_type
         }
         self._save_config(game_name, config)
-        return True, f"Type '{type_name}' ajouté ({width_mm}x{height_mm}mm)"
+        return True, f"Type '{type_name}' ajouté."
 
     def get_card_types(self, game_name):
-        """Récupère les types de cartes configurés pour un jeu"""
         config = self._load_config(game_name)
         return config.get("card_types", {})
 
-    def _get_deck_metadata_path(self, game_name, deck_folder):
-        return DATA_DIR / game_name / deck_folder / "cards.json"
+    # --- METADATA (cards.json dans le "dossier" du deck) ---
+    def _get_meta_key(self, game_name, deck_folder):
+        return f"{self.root_prefix}{game_name}/{deck_folder}/cards.json"
 
     def _load_deck_metadata(self, game_name, deck_folder):
-        path = self._get_deck_metadata_path(game_name, deck_folder)
-        if not path.exists():
-            return {}
+        key = self._get_meta_key(game_name, deck_folder)
         try:
-            with open(path, 'r') as f:
-                return json.load(f)
+            resp = self.s3.get_object(Bucket=self.bucket, Key=key)
+            return json.loads(resp['Body'].read().decode('utf-8'))
         except:
             return {}
 
     def _save_deck_metadata(self, game_name, deck_folder, data):
-        path = self._get_deck_metadata_path(game_name, deck_folder)
-        with open(path, 'w') as f:
-            json.dump(data, f, indent=4)
+        key = self._get_meta_key(game_name, deck_folder)
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=json.dumps(data, indent=4),
+            ContentType='application/json'
+        )
 
     def save_card(self, game_name, card_type_folder, card_image, card_name=None, count=1):
-        """Sauvegarde une carte dans le dossier du type spécifique"""
-        type_path = DATA_DIR / game_name / card_type_folder
-        if not type_path.exists():
-            return False, "Le dossier du type de carte n'existe pas."
-            
-        # Générer un nom si non fourni
+        # 1. Nom fichier
         if not card_name:
-            # Compter les fichiers existants
-            count_files = len(list(type_path.glob("*.png"))) + 1
-            card_name = f"carte_{count_files:03d}"
+            # On liste pour compter (approximatif mais ok)
+            prefix = f"{self.root_prefix}{game_name}/{card_type_folder}/"
+            try:
+                objs = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
+                cnt = objs.get('KeyCount', 0)
+            except:
+                cnt = 0
+            card_name = f"carte_{cnt+1:03d}"
             
-        sanitized_card_name = "".join([c for c in card_name if c.isalnum() or c in (' ', '-', '_')]).strip()
-        filename = f"{sanitized_card_name}.png"
-        file_path = type_path / filename
+        sanitized = "".join([c for c in card_name if c.isalnum() or c in (' ', '-', '_')]).strip()
+        filename = f"{sanitized}.png"
+        key = f"{self.root_prefix}{game_name}/{card_type_folder}/{filename}"
         
+        # 2. Upload Image
         try:
-            cv2.imwrite(str(file_path), card_image)
+            success, encoded_img = cv2.imencode('.png', card_image)
+            if not success:
+                return False, "Erreur encodage image."
+                
+            self.s3.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=encoded_img.tobytes(),
+                ContentType='image/png'
+            )
             
-            # Sauvegarder les métadonnées (quantité)
+            # 3. Metadata
             meta = self._load_deck_metadata(game_name, card_type_folder)
             meta[filename] = {"count": int(count)}
             self._save_deck_metadata(game_name, card_type_folder, meta)
             
-            return True, f"Carte enregistrée : {filename} (x{count})"
+            return True, f"Carte sauvée : {filename}"
         except Exception as e:
-            return False, f"Erreur de sauvegarde : {str(e)}"
+            return False, f"Erreur S3: {str(e)}"
 
     def get_cards_by_type(self, game_name, card_type_folder):
-        """Récupère la liste des cartes d'un type spécifique avec leur quantité"""
-        type_path = DATA_DIR / game_name / card_type_folder
-        if not type_path.exists():
+        prefix = f"{self.root_prefix}{game_name}/{card_type_folder}/"
+        meta = self._load_deck_metadata(game_name, card_type_folder)
+        
+        try:
+            resp = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
+        except:
             return []
             
-        meta = self._load_deck_metadata(game_name, card_type_folder)
         cards = []
-        
-        for file_path in sorted(type_path.glob("*.png")):
-            if file_path.name == "back.png":
-                continue
-                
-            info = meta.get(file_path.name, {})
-            count = info.get("count", 1)
-            
-            cards.append({
-                "name": file_path.stem,
-                "filename": file_path.name,
-                "path": str(file_path),
-                "count": count
-            })
-        return cards
-        
-    def delete_card(self, game_name, card_type_folder, card_name):
-        """Supprime une carte"""
-        filename = f"{card_name}.png"
-        file_path = DATA_DIR / game_name / card_type_folder / filename
-        try:
-            if file_path.exists():
-                file_path.unlink()
-                
-                # Update metadata
-                meta = self._load_deck_metadata(game_name, card_type_folder)
-                if filename in meta:
-                    del meta[filename]
-                    self._save_deck_metadata(game_name, card_type_folder, meta)
+        if 'Contents' in resp:
+            for obj in resp['Contents']:
+                key = obj['Key']
+                filename = key.split('/')[-1]
+                if not filename.endswith('.png') or filename == "back.png":
+                    continue
                     
-                return True, "Carte supprimée."
-            return False, "Fichier introuvable."
+                # Generate Presigned URL
+                url = self.s3.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': self.bucket, 'Key': key},
+                    ExpiresIn=3600
+                )
+                
+                info = meta.get(filename, {})
+                c_val = info.get("count", 1)
+                
+                cards.append({
+                    "name": filename.replace('.png', ''),
+                    "filename": filename,
+                    "path": url,      # URL pour Streamlit
+                    "s3_key": key,    # Key pour operations internes
+                    "count": c_val
+                })
+        
+        # Sort by filename
+        cards.sort(key=lambda x: x['filename'])
+        return cards
+
+    def delete_card(self, game_name, card_type_folder, card_name):
+        filename = f"{card_name}.png"
+        key = f"{self.root_prefix}{game_name}/{card_type_folder}/{filename}"
+        
+        try:
+            self.s3.delete_object(Bucket=self.bucket, Key=key)
+            
+            # Update meta
+            meta = self._load_deck_metadata(game_name, card_type_folder)
+            if filename in meta:
+                del meta[filename]
+                self._save_deck_metadata(game_name, card_type_folder, meta)
+                
+            return True, "Supprimé."
         except Exception as e:
-            return False, f"Erreur : {str(e)}"
+            return False, f"Erreur: {str(e)}"
 
     def update_card(self, game_name, current_type_folder, card_name, new_name=None, new_type_folder=None, new_count=None):
-        """Met à jour une carte (renommage, changement de type, ou quantité)"""
         old_filename = f"{card_name}.png"
-        old_path = DATA_DIR / game_name / current_type_folder / old_filename
+        old_key = f"{self.root_prefix}{game_name}/{current_type_folder}/{old_filename}"
         
-        if not old_path.exists():
-            return False, "Carte introuvable."
-            
-        # Déterminer le dossier cible
         target_folder = new_type_folder if new_type_folder else current_type_folder
-        target_dir = DATA_DIR / game_name / target_folder
-        
-        if not target_dir.exists():
-            return False, "Nouveau type de carte introuvable."
-            
-        # Déterminer le nom cible
         target_name = new_name if new_name else card_name
-        sanitized_name = "".join([c for c in target_name if c.isalnum() or c in (' ', '-', '_')]).strip()
-        new_filename = f"{sanitized_name}.png"
-        new_path = target_dir / new_filename
+        sanitized = "".join([c for c in target_name if c.isalnum() or c in (' ', '-', '_')]).strip()
+        new_filename = f"{sanitized}.png"
+        new_key = f"{self.root_prefix}{game_name}/{target_folder}/{new_filename}"
         
-        # Gestion du déplacement/renommage physique
-        if new_path != old_path:
-            if new_path.exists():
-                return False, "Une carte porte déjà ce nom dans la destination."
-            try:
-                shutil.move(str(old_path), str(new_path))
-            except Exception as e:
-                return False, f"Erreur déplacer fichier : {str(e)}"
-
-        # Gestion des métadonnées
-        # 1. Charger ancien meta
-        old_meta = self._load_deck_metadata(game_name, current_type_folder)
-        current_data = old_meta.get(old_filename, {"count": 1})
+        # Check if change needed
+        move_file = (new_key != old_key)
         
-        # 2. Mettre à jour la quantité si demandée
-        if new_count is not None:
-            current_data["count"] = int(new_count)
+        try:
+            if move_file:
+                # Copy object
+                copy_source = {'Bucket': self.bucket, 'Key': old_key}
+                self.s3.copy_object(CopySource=copy_source, Bucket=self.bucket, Key=new_key)
+                # Delete old
+                self.s3.delete_object(Bucket=self.bucket, Key=old_key)
             
-        # 3. Si on change de dossier
-        if target_folder != current_type_folder:
-            # Supprimer de l'ancien
-            if old_filename in old_meta:
-                del old_meta[old_filename]
+            # Update Metadata logic
+            # 1. Load old meta
+            old_meta = self._load_deck_metadata(game_name, current_type_folder)
+            current_data = old_meta.get(old_filename, {"count": 1})
+            
+            if new_count is not None:
+                current_data["count"] = int(new_count)
+                
+            if target_folder != current_type_folder:
+                # Remove from old
+                if old_filename in old_meta:
+                    del old_meta[old_filename]
+                    self._save_deck_metadata(game_name, current_type_folder, old_meta)
+                # Add to new
+                new_meta = self._load_deck_metadata(game_name, target_folder)
+                new_meta[new_filename] = current_data
+                self._save_deck_metadata(game_name, target_folder, new_meta)
+                
+            elif new_filename != old_filename:
+                # Same folder, rename
+                if old_filename in old_meta:
+                    del old_meta[old_filename]
+                old_meta[new_filename] = current_data
                 self._save_deck_metadata(game_name, current_type_folder, old_meta)
+                
+            elif new_count is not None:
+                # Just count update
+                old_meta[old_filename] = current_data
+                self._save_deck_metadata(game_name, current_type_folder, old_meta)
+                
+            return True, "Mis à jour."
             
-            # Ajouter au nouveau
-            new_meta = self._load_deck_metadata(game_name, target_folder)
-            new_meta[new_filename] = current_data
-            self._save_deck_metadata(game_name, target_folder, new_meta)
-            
-        # 4. Si on reste dans le même dossier mais nom change
-        elif new_filename != old_filename:
-            if old_filename in old_meta:
-                del old_meta[old_filename]
-            old_meta[new_filename] = current_data
-            self._save_deck_metadata(game_name, current_type_folder, old_meta)
-            
-        # 5. Si juste la quantité change (même dossier, même nom)
-        elif new_count is not None:
-             old_meta[old_filename] = current_data
-             self._save_deck_metadata(game_name, current_type_folder, old_meta)
-
-        return True, "Carte mise à jour avec succès."
+        except Exception as e:
+            return False, f"Erreur update S3: {str(e)}"
 
     def save_back_image(self, game_name, card_type_folder, image_data):
-        """Sauvegarde l'image du dos pour un type de carte"""
-        type_path = DATA_DIR / game_name / card_type_folder
-        if not type_path.exists():
-            return False, "Dossier du type introuvable."
-            
-        file_path = type_path / "back.png"
+        key = f"{self.root_prefix}{game_name}/{card_type_folder}/back.png"
         try:
-            cv2.imwrite(str(file_path), image_data)
-            return True, "Dos de carte sauvegardé !"
+            success, encoded_img = cv2.imencode('.png', image_data)
+            if success:
+                self.s3.put_object(
+                    Bucket=self.bucket,
+                    Key=key,
+                    Body=encoded_img.tobytes(),
+                    ContentType='image/png'
+                )
+                return True, "Dos enregistré."
+            return False, "Erreur encode."
         except Exception as e:
-            return False, f"Erreur de sauvegarde : {str(e)}"
+            return False, str(e)
 
     def get_back_image_path(self, game_name, card_type_folder):
-        """Retourne le chemin du dos de carte s'il existe"""
-        path = DATA_DIR / game_name / card_type_folder / "back.png"
-        if path.exists():
-            return str(path)
-        return None
+        """Retourne une URL presignée pour le dos"""
+        key = f"{self.root_prefix}{game_name}/{card_type_folder}/back.png"
+        # Check existence via head
+        try:
+            self.s3.head_object(Bucket=self.bucket, Key=key)
+            url = self.s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self.bucket, 'Key': key},
+                ExpiresIn=3600
+            )
+            return url
+        except:
+            return None
