@@ -40,7 +40,7 @@ def detourer_carte_precise(image_path, output_path="carte_finale.png"):
     blurred = cv2.GaussianBlur(gray, (11, 11), 0)
     # On isole la carte (claire) du fond (noir)
     _, thresh = cv2.threshold(blurred, 45, 255, cv2.THRESH_BINARY)
-    debug_show(thresh, "Thresh")
+    # debug_show(thresh, "Thresh")
     # 3. Détection du contour
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
@@ -88,7 +88,7 @@ def detourer_carte_precise(image_path, output_path="carte_finale.png"):
 
     # Sauvegarde
     cv2.imwrite(output_path, resultat)
-    debug_show(resultat, "Carte detectee")
+    # debug_show(resultat, "Carte detectee")
     print(f"Succès ! Carte redressée enregistrée : {output_path} ({dst_w}x{dst_h}px)")
 
 
