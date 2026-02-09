@@ -19,8 +19,6 @@ def init_page(page_title="Boardgame Print"):
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
         * { font-family: 'Inter', sans-serif; }
-        .stApp { background: #f8f9fa; }
-        h1, h2, h3 { color: #2c3e50; }
         .stButton>button { border-radius: 8px; font-weight: 600; }
         div[data-testid="stSidebarNav"] { border-top: 1px solid #ddd; padding-top: 20px; }
     </style>
