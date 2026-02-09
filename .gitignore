@@ -1,0 +1,34 @@
+# Environment Variables
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Project Specific
+# Assuming 'data' contains local game assets that you might not want to commit if using R2
+# or if they are large files.
+# data/ 
+# Uncomment above if you want to ignore local data folder
+
+# Temporary files
+*.tmp
+*.log
